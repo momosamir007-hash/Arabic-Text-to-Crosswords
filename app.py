@@ -108,6 +108,7 @@ div[data-testid="stSidebar"] {
 # =============================================
 # الثوابت
 # =============================================
+# اختر النموذج المناسب (يمكنك تغييره إلى أي نموذج Qwen آخر)
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 
 SYSTEM_PROMPT = (
@@ -141,13 +142,12 @@ def format_messages(text: str, keyword: str, category: str) -> list:
     ]
 
 def extract_response(text: str) -> str:
-    """استخراج رد المساعد من النص المُولّد (خاص بصيغة Qwen)."""
+    """استخراج رد المساعد من النص المُولّد."""
     if not text:
         return ""
     try:
-        # إزالة أي أجزاء متبقية من الترميز
         text = text.strip()
-        # بعض الأحيان قد يحوي الرد على علامات المساعد
+        # إزالة أي أجزاء متبقية من الترميز
         for tag in ['<|im_end|>', '<|im_start|>', '<|end_of_text|>']:
             text = text.replace(tag, '')
         return text.strip()
@@ -193,12 +193,10 @@ def call_hf_api(
             response = client.chat_completion(
                 messages=messages,
                 max_tokens=max_new_tokens,
-                temperature=max(temperature, 0.01),
-                top_p=0.95,
-                repetition_penalty=1.1,
-                seed=42
+                temperature=temperature,
+                top_p=0.95
+                # repetition_penalty غير مدعوم
             )
-            # استخراج النص من الرد
             if response and response.choices and len(response.choices) > 0:
                 generated_text = response.choices[0].message.content
                 return {"success": True, "generated_text": generated_text}
