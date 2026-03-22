@@ -108,7 +108,7 @@ div[data-testid="stSidebar"] {
 # الثوابت
 # =============================================
 MODEL_NAME = "Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
-API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
+API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_NAME}"
 SYSTEM_PROMPT = (
     "You are an invaluable assistant who creates Arabic crossword clues based on the "
     "provided Arabic text, keyword, and specific category."
