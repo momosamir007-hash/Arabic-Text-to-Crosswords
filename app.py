@@ -13,7 +13,7 @@ st.markdown("""
 
 # --- إعدادات الـ API ---
 # الرابط الجديد لخوادم Hugging Face
-API_URL = "https://router.huggingface.co/hf-inference/models/Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
+API_URL = "https://router.huggingface.co/hf-inference/models/Qwen/Qwen2.5-7B-Instruct"
 
 # جلب التوكن من إعدادات Streamlit
 hf_token = st.secrets["HF_TOKEN"]
