@@ -5,6 +5,7 @@ import requests
 import time
 import json
 import io
+from huggingface_hub import InferenceClient   # إضافة الاستيراد الجديد
 
 # =============================================
 # إعدادات الصفحة
@@ -108,7 +109,7 @@ div[data-testid="stSidebar"] {
 # الثوابت
 # =============================================
 MODEL_NAME = "Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
-API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_NAME}"
+# تم إزالة API_URL لأننا سنستخدم InferenceClient
 SYSTEM_PROMPT = (
     "You are an invaluable assistant who creates Arabic crossword clues based on the "
     "provided Arabic text, keyword, and specific category."
@@ -187,103 +188,42 @@ def call_hf_api(
     max_new_tokens: int = 256,
     max_retries: int = 3
 ) -> dict:
-    """استدعاء Hugging Face Inference API."""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": max_new_tokens,
-            "temperature": max(temperature, 0.01),
-            "top_k": 50,
-            "top_p": 0.95,
-            "repetition_penalty": 1.1,
-            "do_sample": temperature > 0,
-            "return_full_text": True
-        }
-    }
-
+    """استدعاء Hugging Face Inference API باستخدام العميل الرسمي."""
+    client = InferenceClient(
+        model=MODEL_NAME,
+        token=api_key,
+        timeout=120
+    )
     for attempt in range(max_retries):
         try:
-            response = requests.post(
-                API_URL,
-                headers=headers,
-                json=payload,
-                timeout=120
+            response = client.text_generation(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=max(temperature, 0.01),
+                top_k=50,
+                top_p=0.95,
+                repetition_penalty=1.1,
+                do_sample=temperature > 0,
+                return_full_text=True
             )
-
-            # ── النموذج قيد التحميل ──
-            if response.status_code == 503:
-                data = response.json()
-                wait_time = data.get("estimated_time", 30)
-                st.warning(
-                    f"⏳ النموذج قيد التحميل... الانتظار {int(wait_time)} ثانية "
-                    f"(المحاولة {attempt + 1}/{max_retries})"
-                )
-                time.sleep(min(wait_time, 60))
-                continue
-
-            # ── تجاوز الحصة ──
-            if response.status_code == 429:
-                st.warning(
-                    f"⏳ تم تجاوز حد الطلبات، الانتظار 10 ثوانٍ... "
-                    f"(المحاولة {attempt + 1}/{max_retries})"
-                )
-                time.sleep(10)
-                continue
-
-            # ── خطأ مصادقة ──
-            if response.status_code == 401:
-                return {
-                    "success": False,
-                    "error": "❌ مفتاح API غير صالح. تأكّد من صلاحيته."
-                }
-
-            # ── أخطاء أخرى ──
-            if response.status_code != 200:
-                return {
-                    "success": False,
-                    "error": f"❌ خطأ من الخادم ({response.status_code}): "
-                             f"{response.text[:300]}"
-                }
-
-            # ── نجاح ──
-            result = response.json()
-            if isinstance(result, list) and len(result) > 0:
-                generated = result[0].get("generated_text", "")
-            elif isinstance(result, dict):
-                generated = result.get("generated_text", "")
-            else:
-                generated = str(result)
-
-            return {"success": True, "generated_text": generated}
-
-        except requests.exceptions.Timeout:
-            if attempt < max_retries - 1:
-                st.warning(
-                    f"⏳ انتهت مهلة الطلب، إعادة المحاولة... "
-                    f"({attempt + 1}/{max_retries})"
-                )
-                time.sleep(5)
-            else:
-                return {
-                    "success": False,
-                    "error": "❌ انتهت مهلة الاتصال بالخادم بعد عدة محاولات."
-                }
-        except requests.exceptions.ConnectionError:
-            return {
-                "success": False,
-                "error": "❌ فشل الاتصال بالخادم. تحقّق من اتصال الإنترنت."
-            }
+            return {"success": True, "generated_text": response}
         except Exception as e:
-            return {"success": False, "error": f"❌ خطأ غير متوقع: {str(e)}"}
-
-    return {
-        "success": False,
-        "error": "❌ فشلت جميع المحاولات. حاول مرة أخرى لاحقاً."
-    }
+            error_msg = str(e)
+            # معالجة الأخطاء الشائعة
+            if "503" in error_msg or "loading" in error_msg.lower():
+                if attempt < max_retries - 1:
+                    st.warning(f"⏳ النموذج قيد التحميل، إعادة المحاولة ({attempt+1}/{max_retries})...")
+                    time.sleep(15)
+                    continue
+                else:
+                    return {"success": False, "error": "❌ النموذج لا يزال قيد التحميل، حاول لاحقاً."}
+            elif "401" in error_msg or "Unauthorized" in error_msg:
+                return {"success": False, "error": "❌ مفتاح API غير صالح."}
+            elif "429" in error_msg:
+                return {"success": False, "error": "❌ تم تجاوز حد الطلبات. حاول بعد دقيقة."}
+            else:
+                return {"success": False, "error": f"❌ خطأ: {error_msg}"}
+    return {"success": False, "error": "❌ فشلت جميع المحاولات."}
 
 def generate_clues(
     text: str,
