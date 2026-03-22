@@ -20,19 +20,24 @@ def load_model():
     # التحقق من توفر معالج رسوميات (GPU)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # جلب التوكن من إعدادات Streamlit Secrets
+    hf_token = st.secrets["HF_TOKEN"]
+    
+    # تمرير التوكن للمكتبة
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    
     # استخدام torch_dtype=torch.float16 لتقليل استهلاك الذاكرة إذا كان هناك GPU
     model = AutoModelForCausalLM.from_pretrained(
         model_name, 
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        low_cpu_mem_usage=True
+        low_cpu_mem_usage=True,
+        token=hf_token
     ).to(device)
     
     return tokenizer, model, device
 
 with st.spinner("جاري تحميل نموذج الذكاء الاصطناعي... (قد يستغرق بعض الوقت في المرة الأولى)"):
     tokenizer, model, device = load_model()
-
 
 # --- الدوال الأساسية ---
 simple_prompt = (
