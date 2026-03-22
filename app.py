@@ -12,7 +12,9 @@ st.markdown("""
 """)
 
 # --- إعدادات الـ API ---
-API_URL = "https://api-inference.huggingface.co/models/Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
+# تم تحديث الرابط إلى الخادم الجديد لـ Hugging Face
+API_URL = "https://router.huggingface.co/hf-inference/models/Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
+
 # جلب التوكن من إعدادات Streamlit
 hf_token = st.secrets["HF_TOKEN"]
 headers = {"Authorization": f"Bearer {hf_token}"}
@@ -63,14 +65,14 @@ def get_code_completion(prompt, temperature):
         response = requests.post(API_URL, headers=headers, json=payload)
         response_data = response.json()
         
-        # في حال كان النموذج قيد التحميل على سيرفرات Hugging Face (يحدث أحياناً)
-        if "error" in response_data:
+        # في حال كان النموذج قيد التحميل على سيرفرات Hugging Face
+        if isinstance(response_data, dict) and "error" in response_data:
             if "is currently loading" in response_data.get("error", ""):
-                return f"النموذج قيد التحميل على خوادم Hugging Face (يحتاج {response_data.get('estimated_time', 20)} ثانية). يرجى المحاولة مرة أخرى بعد قليل."
+                return f"النموذج قيد التحميل الآن على خوادم Hugging Face (يحتاج حوالي {response_data.get('estimated_time', 20)} ثانية للاستيقاظ). يرجى الانتظار قليلاً ثم الضغط على الزر مرة أخرى."
             return f"خطأ من الخادم: {response_data['error']}"
             
         # استخراج النص المولد
-        if isinstance(response_data, list) and "generated_text" in response_data[0]:
+        if isinstance(response_data, list) and len(response_data) > 0 and "generated_text" in response_data[0]:
             return response_data[0]["generated_text"]
         else:
             return str(response_data)
