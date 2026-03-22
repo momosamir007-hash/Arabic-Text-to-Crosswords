@@ -1,7 +1,6 @@
 import streamlit as st
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
 import pandas as pd
+import requests
 import re
 
 # إعداد الصفحة
@@ -9,35 +8,14 @@ st.set_page_config(page_title="مُولّد تلميحات الكلمات الم
 
 st.title("🧩 مُولّد تلميحات الكلمات المتقاطعة باللغة العربية")
 st.markdown("""
-هذا التطبيق يقوم بتوليد تلميحات لألعاب الكلمات المتقاطعة باللغة العربية بناءً على نصوص، كلمات مفتاحية، وتصنيفات محددة، باستخدام نموذج الذكاء الاصطناعي `Llama3-8B-Ar-Text-to-Cross`.
+هذا التطبيق يقوم بتوليد تلميحات لألعاب الكلمات المتقاطعة باللغة العربية عبر الاتصال بواجهة برمجة تطبيقات Hugging Face (API) للنموذج `Llama3-8B-Ar-Text-to-Cross`.
 """)
 
-# --- إعداد النموذج ---
-@st.cache_resource
-def load_model():
-    model_name = "Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
-    
-    # التحقق من توفر معالج رسوميات (GPU)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # جلب التوكن من إعدادات Streamlit Secrets
-    hf_token = st.secrets["HF_TOKEN"]
-    
-    # تمرير التوكن للمكتبة
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
-    
-    # استخدام torch_dtype=torch.float16 لتقليل استهلاك الذاكرة إذا كان هناك GPU
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        low_cpu_mem_usage=True,
-        token=hf_token
-    ).to(device)
-    
-    return tokenizer, model, device
-
-with st.spinner("جاري تحميل نموذج الذكاء الاصطناعي... (قد يستغرق بعض الوقت في المرة الأولى)"):
-    tokenizer, model, device = load_model()
+# --- إعدادات الـ API ---
+API_URL = "https://api-inference.huggingface.co/models/Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
+# جلب التوكن من إعدادات Streamlit
+hf_token = st.secrets["HF_TOKEN"]
+headers = {"Authorization": f"Bearer {hf_token}"}
 
 # --- الدوال الأساسية ---
 simple_prompt = (
@@ -62,52 +40,59 @@ def format_row(text, keyword, category):
     )
     return formatted_prompt
 
-def extract_text(text):
-    try:
-        if text.count('<|end_header_id|>\n\n') > 1:
-            response_part = text.split('<|end_header_id|>\n\n')[2]
-            assistant_response = response_part.split('<|end_of_text|>')[0]
-            assistant_response = assistant_response.replace('<|eot_id|><|start_header_id|>assistant', '')
-            return assistant_response.strip()
-    except IndexError:
-        pass
-    return None
-
 def get_first_three_clues(generated_text):
     if not generated_text: return "لم يتم توليد تلميحات."
+    # البحث عن الأسطر التي تبدأ بـ CLUE
     clues = re.findall(r'(CLUE\d+:.*)', generated_text)
     first_three_clues = clues[:3]
     return '\n'.join(first_three_clues) if first_three_clues else generated_text
 
 def get_code_completion(prompt, temperature):
-    model.eval()
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 256,
+            "temperature": temperature,
+            "top_p": 0.95,
+            "do_sample": True,
+            "return_full_text": False # لمنع إعادة إرسال السؤال مع الإجابة
+        }
+    }
     
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            max_new_tokens=256,
-            temperature=temperature,
-            top_k=50,
-            top_p=0.95,
-            do_sample=True,
-            repetition_penalty=1.1,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id
-        )
-    return tokenizer.decode(outputs[0], skip_special_tokens=False)
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload)
+        response_data = response.json()
+        
+        # في حال كان النموذج قيد التحميل على سيرفرات Hugging Face (يحدث أحياناً)
+        if "error" in response_data:
+            if "is currently loading" in response_data.get("error", ""):
+                return f"النموذج قيد التحميل على خوادم Hugging Face (يحتاج {response_data.get('estimated_time', 20)} ثانية). يرجى المحاولة مرة أخرى بعد قليل."
+            return f"خطأ من الخادم: {response_data['error']}"
+            
+        # استخراج النص المولد
+        if isinstance(response_data, list) and "generated_text" in response_data[0]:
+            return response_data[0]["generated_text"]
+        else:
+            return str(response_data)
+            
+    except Exception as e:
+        return f"حدث خطأ في الاتصال بالشبكة: {e}"
 
 def process_single_entry(text, keyword, category, temperature):
     prompt = format_row(text, keyword, category)
-    response = get_code_completion(prompt, temperature)
-    generated_text = extract_text(response)
-    return get_first_three_clues(generated_text)
+    response_text = get_code_completion(prompt, temperature)
+    
+    # إذا كان الرد عبارة عن رسالة خطأ من السيرفر، نعرضها كما هي
+    if "خطأ" in response_text or "قيد التحميل" in response_text:
+        return response_text
+        
+    return get_first_three_clues(response_text)
 
 # --- إعدادات الواجهة الجانبية ---
 st.sidebar.header("إعدادات التوليد ⚙️")
-temperature = st.sidebar.slider("درجة الحرارة (Temperature)", min_value=0.1, max_value=1.0, value=0.1, step=0.1, help="قيمة أقل تعني إجابات أكثر دقة، وقيمة أعلى تعني إجابات أكثر إبداعاً وتنوعاً.")
+temperature = st.sidebar.slider("درجة الحرارة (Temperature)", min_value=0.1, max_value=1.0, value=0.1, step=0.1, help="قيمة أقل تعني إجابات دقيقة، وقيمة أعلى تعني إجابات أكثر تنوعاً.")
 
-# --- تقسيم الواجهة إلى قسمين (Tabs) ---
+# --- تقسيم الواجهة إلى قسمين ---
 tab1, tab2 = st.tabs(["📝 إدخال يدوي مباشر", "📁 معالجة ملف CSV"])
 
 # القسم الأول: إدخال يدوي
@@ -122,10 +107,13 @@ with tab1:
     
     if st.button("توليد التلميح 🪄", type="primary"):
         if input_text and input_keyword and input_category:
-            with st.spinner("جاري المعالجة..."):
+            with st.spinner("جاري الاتصال بخوادم Hugging Face..."):
                 result = process_single_entry(input_text, input_keyword, input_category, temperature)
-                st.success("تم التوليد بنجاح!")
-                st.text_area("النتيجة:", result, height=150)
+                if "خطأ" in result or "قيد التحميل" in result:
+                    st.warning(result)
+                else:
+                    st.success("تم التوليد بنجاح!")
+                    st.text_area("النتيجة:", result, height=150)
         else:
             st.warning("يرجى ملء جميع الحقول أولاً.")
 
@@ -151,21 +139,13 @@ with tab2:
             for index, row in df.iterrows():
                 status_text.text(f"جاري معالجة الصف {index + 1} من {total_rows}...")
                 
-                try:
-                    result = process_single_entry(row['text'], row['keyword'], row['category'], temperature)
-                    outputs.append({
-                        'text': row['text'],
-                        'keyword': row['keyword'],
-                        'category': row['category'],
-                        'Generated Arabic Crossword Clue': result
-                    })
-                except Exception as e:
-                    outputs.append({
-                        'text': row['text'],
-                        'keyword': row['keyword'],
-                        'category': row['category'],
-                        'Generated Arabic Crossword Clue': f"خطأ: {str(e)}"
-                    })
+                result = process_single_entry(row['text'], row['keyword'], row['category'], temperature)
+                outputs.append({
+                    'text': row['text'],
+                    'keyword': row['keyword'],
+                    'category': row['category'],
+                    'Generated Arabic Crossword Clue': result
+                })
                 
                 progress_bar.progress((index + 1) / total_rows)
             
