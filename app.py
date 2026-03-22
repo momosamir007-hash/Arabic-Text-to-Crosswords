@@ -108,7 +108,6 @@ div[data-testid="stSidebar"] {
 # =============================================
 # الثوابت
 # =============================================
-# نموذج Qwen متاح مجانًا عبر Inference API
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 
 SYSTEM_PROMPT = (
@@ -128,44 +127,30 @@ CATEGORIES = [
 # =============================================
 # الدوال المساعدة
 # =============================================
-def format_prompt(text: str, keyword: str, category: str) -> str:
-    """تنسيق المدخلات إلى الشكل المطلوب لنموذج Qwen."""
+def format_messages(text: str, keyword: str, category: str) -> list:
+    """تنسيق المدخلات إلى قائمة الرسائل المطلوبة لنماذج المحادثة."""
     user_content = (
         f"{USER_INSTRUCTION}\n\n"
         f"النص: {text}\n\n"
         f"الكلمة المفتاحية: {keyword}\n\n"
         f"الفئة: {category}"
     )
-    # استخدام تنسيق Qwen (chat template)
-    messages = [
+    return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content}
     ]
-    # تطبيق template يدويًا بدلاً من apply_chat_template لتجنب الاعتماد على tokenizer
-    formatted = ""
-    for msg in messages:
-        formatted += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
-    formatted += "<|im_start|>assistant\n"
-    return formatted
 
 def extract_response(text: str) -> str:
     """استخراج رد المساعد من النص المُولّد (خاص بصيغة Qwen)."""
     if not text:
         return ""
     try:
-        # البحث عن آخر ظهور لـ "<|im_start|>assistant"
-        parts = text.split("<|im_start|>assistant")
-        if len(parts) > 1:
-            response_part = parts[-1]
-        else:
-            response_part = text
         # إزالة أي أجزاء متبقية من الترميز
+        text = text.strip()
+        # بعض الأحيان قد يحوي الرد على علامات المساعد
         for tag in ['<|im_end|>', '<|im_start|>', '<|end_of_text|>']:
-            response_part = response_part.replace(tag, '')
-        response_part = response_part.strip()
-        # إذا كان الرد يحتوي على جزء من prompt المستخدم، نحاول استخراج الجزء المنطقي فقط
-        # يمكن إضافة تنظيف إضافي حسب الحاجة
-        return response_part
+            text = text.replace(tag, '')
+        return text.strip()
     except Exception:
         return text.strip()
 
@@ -177,7 +162,6 @@ def extract_clues(generated_text: str, max_clues: int = 3) -> list:
         r'(CLUE\s*\d+\s*:\s*.+?)(?=CLUE\s*\d+\s*:|$)',
         r'(Clue\s*\d+\s*:\s*.+?)(?=Clue\s*\d+\s*:|$)',
         r'(\d+\s*[\.\-\)]\s*.+?)(?=\d+\s*[\.\-\)]|$)',
-        # إضافة نمط للأدلة بالعربية
         r'(الدليل\s*\d+\s*:\s*.+?)(?=الدليل\s*\d+\s*:|$)',
     ]
     clues = []
@@ -187,20 +171,18 @@ def extract_clues(generated_text: str, max_clues: int = 3) -> list:
             clues = [m.strip() for m in matches if m.strip()]
             break
     if not clues:
-        # تقسيم حسب الأسطر إذا لم نجد نمطًا
         lines = [l.strip() for l in generated_text.split('\n') if l.strip()]
-        # استبعاد الأسطر التي تشبه تعليمات
-        clues = [l for l in lines if not any(x in l for x in ['الدليل', 'Clue', 'CLUE'])] or lines
+        clues = lines
     return clues[:max_clues]
 
 def call_hf_api(
-    prompt: str,
+    messages: list,
     api_key: str,
     temperature: float = 0.1,
     max_new_tokens: int = 256,
     max_retries: int = 3
 ) -> dict:
-    """استدعاء Hugging Face Inference API باستخدام العميل الرسمي."""
+    """استدعاء Hugging Face Inference API باستخدام chat_completion."""
     client = InferenceClient(
         model=MODEL_NAME,
         token=api_key,
@@ -208,17 +190,20 @@ def call_hf_api(
     )
     for attempt in range(max_retries):
         try:
-            response = client.text_generation(
-                prompt,
-                max_new_tokens=max_new_tokens,
+            response = client.chat_completion(
+                messages=messages,
+                max_tokens=max_new_tokens,
                 temperature=max(temperature, 0.01),
-                top_k=50,
                 top_p=0.95,
                 repetition_penalty=1.1,
-                do_sample=temperature > 0,
-                return_full_text=True
+                seed=42
             )
-            return {"success": True, "generated_text": response}
+            # استخراج النص من الرد
+            if response and response.choices and len(response.choices) > 0:
+                generated_text = response.choices[0].message.content
+                return {"success": True, "generated_text": generated_text}
+            else:
+                return {"success": False, "error": "❌ لم يتم الحصول على رد من النموذج."}
         except Exception as e:
             error_msg = str(e)
             if "503" in error_msg or "loading" in error_msg.lower():
@@ -246,8 +231,8 @@ def generate_clues(
     num_clues: int = 3
 ) -> dict:
     """توليد الأدلة باستخدام API."""
-    prompt = format_prompt(text, keyword, category)
-    api_result = call_hf_api(prompt, api_key, temperature, max_new_tokens)
+    messages = format_messages(text, keyword, category)
+    api_result = call_hf_api(messages, api_key, temperature, max_new_tokens)
 
     if not api_result["success"]:
         return {
@@ -304,7 +289,6 @@ with st.sidebar:
         help="احصل عليه من: https://huggingface.co/settings/tokens"
     )
 
-    # التحقق من المفتاح
     api_valid = False
     if api_key:
         if api_key.startswith("hf_") and len(api_key) > 10:
@@ -403,7 +387,6 @@ with tab1:
         unsafe_allow_html=True
     )
 
-    # النص
     st.markdown(
         '<p class="rtl-text"><strong>📄 النص المرجعي:</strong></p>',
         unsafe_allow_html=True
@@ -519,7 +502,6 @@ with tab2:
     </div>
     """, unsafe_allow_html=True)
 
-    # نموذج CSV
     sample_df = pd.DataFrame({
         'text': [
             'القاهرة هي عاصمة جمهورية مصر العربية وأكبر مدنها. '
@@ -559,7 +541,6 @@ with tab2:
                 with st.expander("👁️ معاينة البيانات"):
                     st.dataframe(df.head(10), use_container_width=True)
 
-                # تحذير عند وجود عدد كبير
                 if len(df) > 20:
                     st.markdown("""
                     <div class="info-box">
@@ -567,7 +548,6 @@ with tab2:
                     </div>
                     """, unsafe_allow_html=True)
 
-                # تأخير بين الطلبات
                 st.markdown(
                     '<p class="rtl-text"><strong>⏱️ التأخير بين الطلبات (ثانية):</strong></p>',
                     unsafe_allow_html=True
@@ -634,7 +614,6 @@ with tab2:
                                 'status': f'خطأ ❌: {str(e)}'
                             })
 
-                        # تأخير بين الطلبات
                         if index < len(df) - 1:
                             time.sleep(delay)
 
@@ -645,7 +624,6 @@ with tab2:
                         unsafe_allow_html=True
                     )
 
-                    # ── عرض النتائج ──
                     result_df = pd.DataFrame(results)
                     st.markdown("---")
                     st.markdown(
@@ -673,7 +651,6 @@ with tab2:
                                 unsafe_allow_html=True
                             )
 
-                    # تحميل النتائج
                     st.download_button(
                         "📥 تحميل النتائج CSV",
                         data=result_df.to_csv(index=False).encode('utf-8-sig'),
