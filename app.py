@@ -5,7 +5,7 @@ import requests
 import time
 import json
 import io
-from huggingface_hub import InferenceClient   # إضافة الاستيراد الجديد
+from huggingface_hub import InferenceClient
 
 # =============================================
 # إعدادات الصفحة
@@ -108,16 +108,19 @@ div[data-testid="stSidebar"] {
 # =============================================
 # الثوابت
 # =============================================
-MODEL_NAME = "Kamyar-zeinalipour/Llama3-8B-Ar-Text-to-Cross"
-# تم إزالة API_URL لأننا سنستخدم InferenceClient
+# نموذج Qwen متاح مجانًا عبر Inference API
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+
 SYSTEM_PROMPT = (
-    "You are an invaluable assistant who creates Arabic crossword clues based on the "
-    "provided Arabic text, keyword, and specific category."
+    "أنت مساعد خبير في إنشاء أدلة الكلمات المتقاطعة باللغة العربية. "
+    "سأعطيك نصًا وكلمة مفتاحية وفئة، وعليك توليد أدلة مناسبة للكلمة المفتاحية بناءً على النص والفئة. "
+    "قدم الأدلة بشكل منظم وواضح، ويفضل أن تكون 3 أدلة على الأقل."
 )
 USER_INSTRUCTION = (
-    "Create Arabic crossword clues for a specified keyword in Arabic, "
-    "using the provided text and focusing on the indicated category."
+    "أنشئ أدلة كلمات متقاطعة عربية للكلمة المفتاحية المحددة، "
+    "باستخدام النص المقدم مع التركيز على الفئة المشار إليها."
 )
+
 CATEGORIES = [
     "دين", "تاريخ", "جغرافيا", "علوم", "أدب", "رياضة", "فن", "سياسة", "اقتصاد", "تكنولوجيا", "طب", "ثقافة عامة", "أخرى"
 ]
@@ -126,38 +129,43 @@ CATEGORIES = [
 # الدوال المساعدة
 # =============================================
 def format_prompt(text: str, keyword: str, category: str) -> str:
-    """تنسيق المدخلات إلى الشكل المطلوب للنموذج."""
-    user_message = (
+    """تنسيق المدخلات إلى الشكل المطلوب لنموذج Qwen."""
+    user_content = (
         f"{USER_INSTRUCTION}\n\n"
-        f"TEXT: {text}\n\n"
-        f"KEYWORD: {keyword}\n\n"
-        f"CATEGORY: {category}"
+        f"النص: {text}\n\n"
+        f"الكلمة المفتاحية: {keyword}\n\n"
+        f"الفئة: {category}"
     )
-    formatted = (
-        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-        f"{SYSTEM_PROMPT}\n"
-        f"<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
-        f"{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-    )
+    # استخدام تنسيق Qwen (chat template)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content}
+    ]
+    # تطبيق template يدويًا بدلاً من apply_chat_template لتجنب الاعتماد على tokenizer
+    formatted = ""
+    for msg in messages:
+        formatted += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+    formatted += "<|im_start|>assistant\n"
     return formatted
 
 def extract_response(text: str) -> str:
-    """استخراج رد المساعد من النص المُولّد."""
+    """استخراج رد المساعد من النص المُولّد (خاص بصيغة Qwen)."""
     if not text:
         return ""
     try:
-        # محاولة الاستخراج عبر الفاصل
-        parts = text.split('<|end_header_id|>')
-        if len(parts) >= 4:
-            response_part = parts[3]
-        elif len(parts) >= 3:
-            response_part = parts[2]
+        # البحث عن آخر ظهور لـ "<|im_start|>assistant"
+        parts = text.split("<|im_start|>assistant")
+        if len(parts) > 1:
+            response_part = parts[-1]
         else:
             response_part = text
-        # تنظيف
-        for tag in ['<|eot_id|>', '<|end_of_text|>', '<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>']:
+        # إزالة أي أجزاء متبقية من الترميز
+        for tag in ['<|im_end|>', '<|im_start|>', '<|end_of_text|>']:
             response_part = response_part.replace(tag, '')
-        return response_part.strip()
+        response_part = response_part.strip()
+        # إذا كان الرد يحتوي على جزء من prompt المستخدم، نحاول استخراج الجزء المنطقي فقط
+        # يمكن إضافة تنظيف إضافي حسب الحاجة
+        return response_part
     except Exception:
         return text.strip()
 
@@ -169,6 +177,8 @@ def extract_clues(generated_text: str, max_clues: int = 3) -> list:
         r'(CLUE\s*\d+\s*:\s*.+?)(?=CLUE\s*\d+\s*:|$)',
         r'(Clue\s*\d+\s*:\s*.+?)(?=Clue\s*\d+\s*:|$)',
         r'(\d+\s*[\.\-\)]\s*.+?)(?=\d+\s*[\.\-\)]|$)',
+        # إضافة نمط للأدلة بالعربية
+        r'(الدليل\s*\d+\s*:\s*.+?)(?=الدليل\s*\d+\s*:|$)',
     ]
     clues = []
     for pattern in patterns:
@@ -177,8 +187,10 @@ def extract_clues(generated_text: str, max_clues: int = 3) -> list:
             clues = [m.strip() for m in matches if m.strip()]
             break
     if not clues:
+        # تقسيم حسب الأسطر إذا لم نجد نمطًا
         lines = [l.strip() for l in generated_text.split('\n') if l.strip()]
-        clues = lines
+        # استبعاد الأسطر التي تشبه تعليمات
+        clues = [l for l in lines if not any(x in l for x in ['الدليل', 'Clue', 'CLUE'])] or lines
     return clues[:max_clues]
 
 def call_hf_api(
@@ -209,7 +221,6 @@ def call_hf_api(
             return {"success": True, "generated_text": response}
         except Exception as e:
             error_msg = str(e)
-            # معالجة الأخطاء الشائعة
             if "503" in error_msg or "loading" in error_msg.lower():
                 if attempt < max_retries - 1:
                     st.warning(f"⏳ النموذج قيد التحميل، إعادة المحاولة ({attempt+1}/{max_retries})...")
@@ -218,7 +229,7 @@ def call_hf_api(
                 else:
                     return {"success": False, "error": "❌ النموذج لا يزال قيد التحميل، حاول لاحقاً."}
             elif "401" in error_msg or "Unauthorized" in error_msg:
-                return {"success": False, "error": "❌ مفتاح API غير صالح."}
+                return {"success": False, "error": "❌ مفتاح API غير صالح أو النموذج يتطلب قبول الشروط."}
             elif "429" in error_msg:
                 return {"success": False, "error": "❌ تم تجاوز حد الطلبات. حاول بعد دقيقة."}
             else:
@@ -359,7 +370,7 @@ with st.sidebar:
     st.markdown(f"""
     <div class="info-box">
         <p><strong>📦 النموذج:</strong></p>
-        <p style="font-size:0.85rem;">Llama3-8B-Ar-Text-to-Cross</p>
+        <p style="font-size:0.85rem;">{MODEL_NAME}</p>
         <p><strong>🌐 الوضع:</strong> API (Hugging Face)</p>
     </div>
     """, unsafe_allow_html=True)
@@ -679,7 +690,7 @@ with tab2:
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; color:#95a5a6; padding:20px;">
-    <p>🧩 مولّد أدلة الكلمات المتقاطعة العربية — نسخة API</p>
+    <p>🧩 مولّد أدلة الكلمات المتقاطعة العربية — نسخة API مع Qwen</p>
     <p style="font-size:0.85rem;"> مبني باستخدام Streamlit و Hugging Face Inference API </p>
 </div>
 """, unsafe_allow_html=True)
